@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegStatic from "ffmpeg-static";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import { PassThrough } from "stream";
 import path from "path";
@@ -11,7 +11,7 @@ if (ffmpegStatic) {
   ffmpeg.setFfmpegPath(ffmpegStatic);
 }
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // Resolution order:
 //  1. YTDLP_PATH env var (explicit override)
@@ -28,8 +28,20 @@ const YTDLP = resolveYtdlpPath();
 
 const SPAWN_ENV = {
   ...process.env,
-  PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+  // Include Node.js binary dir so yt-dlp can use it as its JS runtime
+  // (/var/lang/bin is Vercel Lambda's Node path; others cover local envs)
+  PATH: `${process.env.PATH}:/var/lang/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
 };
+
+// Flags passed to every yt-dlp invocation
+// - tv_embedded client bypasses the "sign in to confirm" bot-check
+// - js-runtimes node tells yt-dlp to use the ambient Node.js instead of Deno
+const YTDLP_COMMON_ARGS = [
+  "--no-playlist",
+  "--no-warnings",
+  // android client returns plain URLs without bot-check; tv_embedded as fallback
+  "--extractor-args", "youtube:player_client=android,tv_embedded,web",
+];
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^\w\s-]/g, "").replace(/\s+/g, "_").slice(0, 80);
@@ -54,14 +66,14 @@ async function resolveStreamUrls(
   videoId: string,
   isAudio: boolean
 ): Promise<{ videoUrl?: string; audioUrl: string }> {
-  // For audio: one URL. For video: may return two lines (video \n audio).
   const fmt = isAudio
     ? "bestaudio/best"
     : "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best";
 
-  const { stdout } = await execAsync(
-    `${YTDLP} -g --no-playlist -f "${fmt}" -- "${videoId}"`,
-    { env: SPAWN_ENV, timeout: 20_000 }
+  const { stdout } = await execFileAsync(
+    YTDLP,
+    [...YTDLP_COMMON_ARGS, "-g", "-f", fmt, "--", videoId],
+    { env: SPAWN_ENV, timeout: 30_000 }
   );
 
   const urls = stdout.trim().split("\n").filter(Boolean);
