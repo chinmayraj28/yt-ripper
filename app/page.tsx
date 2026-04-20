@@ -1,64 +1,126 @@
-import Image from "next/image";
+"use client";
+
+import { useState } from "react";
+import ScanlineOverlay from "@/components/ScanlineOverlay";
+import TerminalHeader from "@/components/TerminalHeader";
+import UrlInput from "@/components/UrlInput";
+import VideoInfoPanel from "@/components/VideoInfoPanel";
+import TrimControls from "@/components/TrimControls";
+import FormatSelector, { type Format } from "@/components/FormatSelector";
+import DownloadPanel from "@/components/DownloadPanel";
+
+interface VideoInfo {
+  title: string;
+  author: string;
+  duration: number;
+  thumbnail: string | null;
+  viewCount: string;
+  audioFormats: { itag: number; audioBitrate: number; audioCodec: string }[];
+  videoFormats: { itag: number; qualityLabel: string; container: string }[];
+}
 
 export default function Home() {
+  const [loading, setLoading] = useState(false);
+  const [info, setInfo] = useState<VideoInfo | null>(null);
+  const [url, setUrl] = useState("");
+
+  const [format, setFormat] = useState<Format>("mp3");
+  const [trimEnabled, setTrimEnabled] = useState(false);
+  const [startTime, setStartTime] = useState(0);
+  const [endTime, setEndTime] = useState(0);
+  const [selectedItag, setSelectedItag] = useState<number | null>(null);
+
+  function handleInfo(data: VideoInfo, resolvedUrl: string) {
+    setInfo(data);
+    setUrl(resolvedUrl);
+    setStartTime(0);
+    setEndTime(data.duration);
+    setSelectedItag(null);
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div
+      className="min-h-screen grid-bg"
+      style={{ fontFamily: "var(--font-jetbrains, 'JetBrains Mono', monospace)" }}
+    >
+      <ScanlineOverlay />
+      <TerminalHeader />
+
+      <main className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+        {/* Boot sequence */}
+        <div
+          className="text-xs space-y-0.5 animate-fade-in"
+          style={{ color: "var(--fg-dim)", fontFamily: "var(--font-mono)" }}
+        >
+          {[
+            "[BOOT] kernel loaded :: audio-extraction-v2",
+            "[BOOT] ffmpeg engine started",
+            "[BOOT] ytdl interface ready",
+            "[BOOT] all systems nominal — awaiting input",
+          ].map((line, i) => (
+            <div
+              key={i}
+              className={`animate-fade-in delay-${(i + 1) * 100}`}
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              <span style={{ color: "var(--fg)" }}>▸</span> {line}
+            </div>
+          ))}
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+
+        <hr className="divider" />
+
+        {/* URL Input */}
+        <UrlInput onInfo={handleInfo} loading={loading} setLoading={setLoading} />
+
+        {/* Results — only when info is loaded */}
+        {info && (
+          <>
+            <VideoInfoPanel info={info} />
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <TrimControls
+                duration={info.duration}
+                startTime={startTime}
+                endTime={endTime}
+                onStartChange={setStartTime}
+                onEndChange={setEndTime}
+                enabled={trimEnabled}
+                onToggle={setTrimEnabled}
+              />
+
+              <FormatSelector
+                format={format}
+                onChange={setFormat}
+                videoFormats={info.videoFormats}
+                selectedItag={selectedItag}
+                onItagChange={setSelectedItag}
+              />
+            </div>
+
+            <DownloadPanel
+              url={url}
+              title={info.title}
+              format={format}
+              startTime={startTime}
+              endTime={endTime}
+              trimEnabled={trimEnabled}
+              selectedItag={selectedItag}
+              duration={info.duration}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+          </>
+        )}
+
+        {/* Footer */}
+        <footer
+          className="text-xs pt-4 pb-8 space-y-1"
+          style={{ color: "var(--fg-muted)", borderTop: "1px solid var(--border)" }}
+        >
+          <div>{"// YT-RIPPER v2.4.1 :: AUDIO EXTRACTION TERMINAL"}</div>
+          <div>{"// built with next.js + ffmpeg + ytdl-core"}</div>
+          <div style={{ color: "var(--red)", textShadow: "var(--glow-red)" }}>
+            {"// WARNING: USE FOR PERSONAL & EDUCATIONAL PURPOSES ONLY"}
+          </div>
+        </footer>
       </main>
     </div>
   );
