@@ -1,5 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Innertube } from "youtubei.js";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import path from "path";
+import fs from "fs";
+
+const execFileAsync = promisify(execFile);
+
+function resolveYtdlpPath(): string {
+  if (process.env.YTDLP_PATH) return process.env.YTDLP_PATH;
+  const bundled = path.join(process.cwd(), "bin", "yt-dlp");
+  if (fs.existsSync(bundled)) return bundled;
+  return "/opt/homebrew/bin/yt-dlp";
+}
+
+const YTDLP = resolveYtdlpPath();
+
+const SPAWN_ENV = {
+  ...process.env,
+  PATH: `${process.env.PATH}:/var/lang/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+};
 
 function extractVideoId(url: string): string | null {
   try {
@@ -28,47 +47,79 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const yt = await Innertube.create({ retrieve_player: true });
-    const info = await yt.getInfo(videoId);
-    const basic = info.basic_info;
+    const { stdout } = await execFileAsync(
+      YTDLP,
+      [
+        "--no-playlist",
+        "--no-warnings",
+        "--dump-json",
+        "--extractor-args", "youtube:player_client=android,tv_embedded,web",
+        "--", videoId,
+      ],
+      { env: SPAWN_ENV, timeout: 20_000 }
+    );
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const adaptive: any[] = (info.streaming_data?.adaptive_formats as any[]) ?? [];
+    const data = JSON.parse(stdout) as {
+      title?: string;
+      uploader?: string;
+      duration?: number;
+      view_count?: number;
+      thumbnail?: string;
+      thumbnails?: { url: string; width?: number }[];
+      formats?: {
+        format_id: string;
+        ext: string;
+        acodec?: string;
+        vcodec?: string;
+        abr?: number;
+        quality?: number;
+        height?: number;
+        fps?: number;
+      }[];
+    };
 
-    const audioFormats = adaptive
-      .filter((f) => f.has_audio && !f.has_video)
+    // Best thumbnail: pick largest width, else last in array, else top-level
+    const thumbs = data.thumbnails ?? [];
+    const bestThumb =
+      thumbs.sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0]?.url ??
+      data.thumbnail ??
+      null;
+
+    const formats = data.formats ?? [];
+
+    const audioFormats = formats
+      .filter((f) => f.acodec && f.acodec !== "none" && (!f.vcodec || f.vcodec === "none"))
       .slice(0, 6)
       .map((f) => ({
-        itag: f.itag,
-        mimeType: f.mime_type,
-        bitrate: f.bitrate,
-        audioQuality: f.audio_quality ?? "unknown",
+        itag: f.format_id,
+        mimeType: f.ext,
+        bitrate: f.abr ? Math.round(f.abr * 1000) : 0,
+        audioQuality: f.quality ?? 0,
       }));
 
-    const videoFormats = adaptive
-      .filter((f) => f.has_video && f.has_audio)
+    const videoFormats = formats
+      .filter((f) => f.vcodec && f.vcodec !== "none" && f.ext === "mp4" && f.height)
+      .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))
       .slice(0, 6)
       .map((f) => ({
-        itag: f.itag,
-        qualityLabel: f.quality_label ?? "auto",
-        mimeType: f.mime_type,
+        itag: f.format_id,
+        qualityLabel: `${f.height}p${f.fps ? f.fps : ""}`,
+        container: f.ext,
       }));
-
-    const thumbnails = (basic.thumbnail as { url: string }[]) ?? [];
-    const thumbnail = thumbnails[thumbnails.length - 1]?.url ?? null;
 
     return NextResponse.json({
       videoId,
-      title: basic.title ?? "Unknown",
-      author: basic.author ?? "Unknown",
-      duration: basic.duration ?? 0,
-      thumbnail,
-      viewCount: basic.view_count?.toString() ?? "0",
+      title: data.title ?? "Unknown",
+      author: data.uploader ?? "Unknown",
+      duration: data.duration ?? 0,
+      thumbnail: bestThumb,
+      viewCount: String(data.view_count ?? 0),
       audioFormats,
       videoFormats,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to fetch info";
+    console.error("[info]", message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
