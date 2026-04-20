@@ -7,10 +7,10 @@ const nextConfig: NextConfig = {
     serverActions: {
       bodySizeLimit: "50mb",
     },
-    // Bundle the yt-dlp binary into the /api/download function on Vercel
-    outputFileTracingIncludes: {
-      "/api/download": ["./bin/yt-dlp"],
-    },
+  },
+  // Bundle the yt-dlp binary into the /api/download function on Vercel
+  outputFileTracingIncludes: {
+    "/api/download": ["./bin/yt-dlp"],
   },
   images: {
     remotePatterns: [
