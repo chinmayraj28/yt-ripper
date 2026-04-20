@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
         "--no-playlist",
         "--no-warnings",
         "--dump-json",
-        "--extractor-args", "youtube:player_client=android,tv_embedded,web",
+        "--extractor-args", "youtube:player_client=ios,tv",
         "--", videoId,
       ],
       { env: SPAWN_ENV, timeout: 20_000 }

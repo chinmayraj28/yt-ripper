@@ -40,7 +40,7 @@ const YTDLP_COMMON_ARGS = [
   "--no-playlist",
   "--no-warnings",
   // android client returns plain URLs without bot-check; tv_embedded as fallback
-  "--extractor-args", "youtube:player_client=android,tv_embedded,web",
+  "--extractor-args", "youtube:player_client=ios,tv",
 ];
 
 function sanitizeFilename(name: string): string {
