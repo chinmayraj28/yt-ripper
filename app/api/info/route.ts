@@ -17,7 +17,7 @@ const YTDLP = resolveYtdlpPath();
 
 const SPAWN_ENV = {
   ...process.env,
-  PATH: `${process.env.PATH}:/var/lang/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+  PATH: `${process.env.PATH}:/home/chinmay/.bun/bin:/var/lang/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
 };
 
 function extractVideoId(url: string): string | null {
@@ -46,6 +46,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
   }
 
+  const cookiesArgs: string[] = process.env.YTDLP_COOKIES
+    ? ["--cookies", process.env.YTDLP_COOKIES]
+    : [];
+
   try {
     const { stdout } = await execFileAsync(
       YTDLP,
@@ -53,7 +57,8 @@ export async function GET(req: NextRequest) {
         "--no-playlist",
         "--no-warnings",
         "--dump-json",
-        "--extractor-args", "youtube:player_client=ios,tv",
+        "--js-runtimes", "bun",
+        ...cookiesArgs,
         "--", videoId,
       ],
       { env: SPAWN_ENV, timeout: 20_000 }

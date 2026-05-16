@@ -42,3 +42,6 @@ next-env.d.ts
 
 # yt-dlp binary (downloaded via postinstall)
 /bin/
+
+# YouTube cookies (contains auth credentials, never commit)
+cookies.txt

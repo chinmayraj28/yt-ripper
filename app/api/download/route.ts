@@ -30,17 +30,18 @@ const SPAWN_ENV = {
   ...process.env,
   // Include Node.js binary dir so yt-dlp can use it as its JS runtime
   // (/var/lang/bin is Vercel Lambda's Node path; others cover local envs)
-  PATH: `${process.env.PATH}:/var/lang/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+  PATH: `${process.env.PATH}:/home/chinmay/.bun/bin:/var/lang/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
 };
 
-// Flags passed to every yt-dlp invocation
-// - tv_embedded client bypasses the "sign in to confirm" bot-check
-// - js-runtimes node tells yt-dlp to use the ambient Node.js instead of Deno
+const cookiesArgs: string[] = process.env.YTDLP_COOKIES
+  ? ["--cookies", process.env.YTDLP_COOKIES]
+  : [];
+
 const YTDLP_COMMON_ARGS = [
   "--no-playlist",
   "--no-warnings",
-  // android client returns plain URLs without bot-check; tv_embedded as fallback
-  "--extractor-args", "youtube:player_client=ios,tv",
+  "--js-runtimes", "bun",
+  ...cookiesArgs,
 ];
 
 function sanitizeFilename(name: string): string {
