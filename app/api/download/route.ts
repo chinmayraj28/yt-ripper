@@ -7,10 +7,11 @@ import fs from "fs";
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
-const FFMPEG = ffmpegStatic;
-if (!FFMPEG) {
+if (!ffmpegStatic) {
   throw new Error("ffmpeg-static binary not found");
 }
+
+const FFMPEG: string = ffmpegStatic;
 
 function resolveYtdlpPath(): string {
   if (process.env.YTDLP_PATH) return process.env.YTDLP_PATH;
@@ -142,8 +143,14 @@ function pipeDownload(
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+  const ytdlpStdout = ytdlp.stdout;
+  const ytdlpStderr = ytdlp.stderr;
+  if (!ytdlpStdout || !ytdlpStderr) {
+    throw new Error("yt-dlp stdio not available");
+  }
+
   let ffmpeg: ChildProcess | null = null;
-  let output: NodeJS.ReadableStream;
+  let output: NodeJS.ReadableStream = ytdlpStdout;
   let stderr = "";
   let failed = false;
 
@@ -153,28 +160,34 @@ function pipeDownload(
     if (text.trim()) console.error(`[${source}]`, text.trim());
   };
 
-  ytdlp.stderr.on("data", (chunk: Buffer) => logStderr("yt-dlp", chunk));
+  ytdlpStderr.on("data", (chunk: Buffer) => logStderr("yt-dlp", chunk));
 
   if (needsFfmpeg) {
-    ffmpeg = spawn(FFMPEG, buildFfmpegArgs(isAudio, startTime, endTime), {
+    const ff = spawn(FFMPEG, buildFfmpegArgs(isAudio, startTime, endTime), {
       stdio: ["pipe", "pipe", "pipe"],
     });
+    ffmpeg = ff;
 
-    ffmpeg.stderr.on("data", (chunk: Buffer) => logStderr("ffmpeg", chunk));
-    ytdlp.stdout.pipe(ffmpeg.stdin);
+    const ffStdin = ff.stdin;
+    const ffStdout = ff.stdout;
+    const ffStderr = ff.stderr;
+    if (!ffStdin || !ffStdout || !ffStderr) {
+      throw new Error("ffmpeg stdio not available");
+    }
 
-    ytdlp.stdout.on("error", (err) => {
+    ffStderr.on("data", (chunk: Buffer) => logStderr("ffmpeg", chunk));
+    ytdlpStdout.pipe(ffStdin);
+
+    ytdlpStdout.on("error", (err) => {
       failed = true;
-      ffmpeg?.stdin.destroy(err);
+      ffStdin.destroy(err);
     });
 
-    ffmpeg.stdin.on("error", () => {
+    ffStdin.on("error", () => {
       // yt-dlp may close early if ffmpeg stops reading
     });
 
-    output = ffmpeg.stdout;
-  } else {
-    output = ytdlp.stdout;
+    output = ffStdout;
   }
 
   return new ReadableStream<Uint8Array>({
