@@ -1,22 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import ffmpeg from "fluent-ffmpeg";
 import ffmpegStatic from "ffmpeg-static";
-import { execFile } from "child_process";
-import { promisify } from "util";
-import { PassThrough } from "stream";
+import { spawn, type ChildProcess } from "child_process";
 import path from "path";
 import fs from "fs";
 
-if (ffmpegStatic) {
-  ffmpeg.setFfmpegPath(ffmpegStatic);
+export const maxDuration = 300;
+export const dynamic = "force-dynamic";
+
+const FFMPEG = ffmpegStatic;
+if (!FFMPEG) {
+  throw new Error("ffmpeg-static binary not found");
 }
 
-const execFileAsync = promisify(execFile);
-
-// Resolution order:
-//  1. YTDLP_PATH env var (explicit override)
-//  2. ./bin/yt-dlp bundled by postinstall (works on Vercel)
-//  3. Common Homebrew path for local dev on macOS
 function resolveYtdlpPath(): string {
   if (process.env.YTDLP_PATH) return process.env.YTDLP_PATH;
   const bundled = path.join(process.cwd(), "bin", "yt-dlp");
@@ -28,21 +23,14 @@ const YTDLP = resolveYtdlpPath();
 
 const SPAWN_ENV = {
   ...process.env,
-  // Include Node.js binary dir so yt-dlp can use it as its JS runtime
-  // (/var/lang/bin is Vercel Lambda's Node path; others cover local envs)
-  PATH: `${process.env.PATH}:/home/chinmay/.bun/bin:/var/lang/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+  PATH: `${process.env.PATH}:/var/lang/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
 };
 
 const cookiesArgs: string[] = process.env.YTDLP_COOKIES
   ? ["--cookies", process.env.YTDLP_COOKIES]
   : [];
 
-const YTDLP_COMMON_ARGS = [
-  "--no-playlist",
-  "--no-warnings",
-  "--js-runtimes", "bun",
-  ...cookiesArgs,
-];
+const YTDLP_COMMON_ARGS = ["--no-playlist", "--no-warnings", ...cookiesArgs];
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^\w\s-]/g, "").replace(/\s+/g, "_").slice(0, 80);
@@ -63,27 +51,183 @@ function extractVideoId(url: string): string | null {
   }
 }
 
-async function resolveStreamUrls(
-  videoId: string,
-  isAudio: boolean
-): Promise<{ videoUrl?: string; audioUrl: string }> {
+function buildYtdlpArgs(videoId: string, isAudio: boolean): string[] {
   const fmt = isAudio
     ? "bestaudio/best"
     : "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best";
 
-  const { stdout } = await execFileAsync(
-    YTDLP,
-    [...YTDLP_COMMON_ARGS, "-g", "-f", fmt, "--", videoId],
-    { env: SPAWN_ENV, timeout: 30_000 }
-  );
+  return [
+    ...YTDLP_COMMON_ARGS,
+    "-f",
+    fmt,
+    "--no-part",
+    "-o",
+    "-",
+    "--",
+    videoId,
+  ];
+}
 
-  const urls = stdout.trim().split("\n").filter(Boolean);
+function buildFfmpegArgs(
+  isAudio: boolean,
+  startTime?: number,
+  endTime?: number
+): string[] {
+  const args = ["-hide_banner", "-loglevel", "error", "-nostdin"];
 
-  if (isAudio || urls.length === 1) {
-    return { audioUrl: urls[0] };
+  if (startTime !== undefined && startTime > 0) {
+    args.push("-ss", String(startTime));
   }
-  // Two lines → video URL first, audio URL second
-  return { videoUrl: urls[0], audioUrl: urls[1] };
+
+  args.push("-i", "pipe:0");
+
+  if (
+    endTime !== undefined &&
+    startTime !== undefined &&
+    endTime > startTime
+  ) {
+    args.push("-t", String(endTime - startTime));
+  }
+
+  if (isAudio) {
+    args.push(
+      "-vn",
+      "-acodec",
+      "libmp3lame",
+      "-q:a",
+      "2",
+      "-f",
+      "mp3",
+      "pipe:1"
+    );
+  } else {
+    args.push(
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-c:a",
+      "aac",
+      "-movflags",
+      "frag_keyframe+empty_moov",
+      "-f",
+      "mp4",
+      "pipe:1"
+    );
+  }
+
+  return args;
+}
+
+function killProcess(proc: ChildProcess | null) {
+  if (!proc || proc.killed) return;
+  proc.kill("SIGTERM");
+}
+
+function pipeDownload(
+  videoId: string,
+  isAudio: boolean,
+  startTime?: number,
+  endTime?: number
+): ReadableStream<Uint8Array> {
+  const needsFfmpeg =
+    isAudio ||
+    (startTime !== undefined && startTime > 0) ||
+    (endTime !== undefined &&
+      startTime !== undefined &&
+      endTime > startTime);
+
+  const ytdlp = spawn(YTDLP, buildYtdlpArgs(videoId, isAudio), {
+    env: SPAWN_ENV,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let ffmpeg: ChildProcess | null = null;
+  let output: NodeJS.ReadableStream;
+  let stderr = "";
+  let failed = false;
+
+  const logStderr = (source: string, chunk: Buffer) => {
+    const text = chunk.toString();
+    stderr += text;
+    if (text.trim()) console.error(`[${source}]`, text.trim());
+  };
+
+  ytdlp.stderr.on("data", (chunk: Buffer) => logStderr("yt-dlp", chunk));
+
+  if (needsFfmpeg) {
+    ffmpeg = spawn(FFMPEG, buildFfmpegArgs(isAudio, startTime, endTime), {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    ffmpeg.stderr.on("data", (chunk: Buffer) => logStderr("ffmpeg", chunk));
+    ytdlp.stdout.pipe(ffmpeg.stdin);
+
+    ytdlp.stdout.on("error", (err) => {
+      failed = true;
+      ffmpeg?.stdin.destroy(err);
+    });
+
+    ffmpeg.stdin.on("error", () => {
+      // yt-dlp may close early if ffmpeg stops reading
+    });
+
+    output = ffmpeg.stdout;
+  } else {
+    output = ytdlp.stdout;
+  }
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      output.on("data", (chunk: Buffer) => {
+        if (!failed) controller.enqueue(new Uint8Array(chunk));
+      });
+
+      const finish = (err?: Error) => {
+        if (failed) return;
+        failed = true;
+        killProcess(ytdlp);
+        killProcess(ffmpeg);
+
+        if (err) {
+          controller.error(err);
+          return;
+        }
+        controller.close();
+      };
+
+      output.on("end", () => finish());
+      output.on("error", (err) => finish(err));
+
+      ytdlp.on("error", (err) => finish(err));
+      ffmpeg?.on("error", (err) => finish(err));
+
+      ytdlp.on("close", (code) => {
+        if (code !== 0 && !failed) {
+          finish(
+            new Error(
+              stderr.trim() || `yt-dlp exited with code ${code ?? "unknown"}`
+            )
+          );
+        }
+      });
+
+      ffmpeg?.on("close", (code) => {
+        if (code !== 0 && !failed) {
+          finish(
+            new Error(
+              stderr.trim() || `ffmpeg exited with code ${code ?? "unknown"}`
+            )
+          );
+        }
+      });
+    },
+    cancel() {
+      failed = true;
+      killProcess(ytdlp);
+      killProcess(ffmpeg);
+    },
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -106,69 +250,7 @@ export async function POST(req: NextRequest) {
   const contentType = isAudio ? "audio/mpeg" : "video/mp4";
   const ext = isAudio ? "mp3" : "mp4";
 
-  // ── Resolve URLs before opening response ──────────────────────────────────
-  let streamUrls: { videoUrl?: string; audioUrl: string };
-  try {
-    streamUrls = await resolveStreamUrls(videoId, isAudio);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Failed to resolve stream URL";
-    console.error("[yt-dlp -g]", msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
-  }
-
-  // ── Build ffmpeg command ───────────────────────────────────────────────────
-  const readableStream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const passThrough = new PassThrough();
-
-      // If two URLs: video stream + audio stream (adaptive)
-      const cmd = streamUrls.videoUrl
-        ? ffmpeg(streamUrls.videoUrl).input(streamUrls.audioUrl)
-        : ffmpeg(streamUrls.audioUrl);
-
-      // Trim: -ss before input = segment-accurate seeking on HLS
-      if (startTime !== undefined && startTime > 0) {
-        cmd.setStartTime(startTime);
-      }
-      if (endTime !== undefined && startTime !== undefined && endTime > startTime) {
-        cmd.setDuration(endTime - startTime);
-      }
-
-      if (isAudio) {
-        cmd.noVideo().audioCodec("libmp3lame").audioQuality(2).format("mp3");
-      } else if (streamUrls.videoUrl) {
-        // Merge two adaptive streams
-        cmd
-          .outputOptions([
-            "-map 0:v:0",
-            "-map 1:a:0",
-            "-movflags frag_keyframe+empty_moov",
-            "-preset ultrafast",
-          ])
-          .videoCodec("libx264")
-          .audioCodec("aac")
-          .format("mp4");
-      } else {
-        // Single muxed stream
-        cmd
-          .videoCodec("libx264")
-          .audioCodec("aac")
-          .format("mp4")
-          .outputOptions(["-movflags frag_keyframe+empty_moov", "-preset ultrafast"]);
-      }
-
-      cmd
-        .on("error", (err) => {
-          console.error("[ffmpeg]", err.message);
-          controller.error(err);
-        })
-        .pipe(passThrough);
-
-      passThrough.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
-      passThrough.on("end", () => controller.close());
-      passThrough.on("error", (err) => controller.error(err));
-    },
-  });
+  const readableStream = pipeDownload(videoId, isAudio, startTime, endTime);
 
   return new NextResponse(readableStream, {
     headers: {

@@ -87,6 +87,38 @@ export default function DownloadPanel({
 
       const blob = await res.blob();
       const ext = format === "mp3" ? "mp3" : "mp4";
+
+      if (blob.size < 1024) {
+        pushLog(`> [ERR] download too small (${blob.size} bytes) — stream may have failed`);
+        setState("error");
+        setProgress(0);
+        return;
+      }
+
+      const header = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+      const isMp3 =
+        (header[0] === 0x49 && header[1] === 0x44 && header[2] === 0x33) ||
+        (header[0] === 0xff && (header[1] & 0xe0) === 0xe0);
+      const isMp4 =
+        header[0] === 0x00 &&
+        header[1] === 0x00 &&
+        header[2] === 0x00 &&
+        (header[3] === 0x18 || header[3] === 0x1c || header[3] === 0x20);
+
+      if (format === "mp3" && !isMp3) {
+        pushLog(`> [ERR] invalid MP3 data received`);
+        setState("error");
+        setProgress(0);
+        return;
+      }
+
+      if (format === "mp4" && !isMp4) {
+        pushLog(`> [ERR] invalid MP4 data received`);
+        setState("error");
+        setProgress(0);
+        return;
+      }
+
       const fileName = `${title.replace(/[^\w\s]/g, "").trim().replace(/\s+/g, "_").slice(0, 60)}.${ext}`;
 
       const objectUrl = URL.createObjectURL(blob);

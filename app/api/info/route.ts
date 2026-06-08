@@ -57,7 +57,6 @@ export async function GET(req: NextRequest) {
         "--no-playlist",
         "--no-warnings",
         "--dump-json",
-        "--js-runtimes", "bun",
         ...cookiesArgs,
         "--", videoId,
       ],
